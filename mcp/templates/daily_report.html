@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Informe de Incidentes de Seguridad - {{ date }}</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1, h2, h3 {
+            color: #333;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+        .stat-card {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            text-align: center;
+        }
+        .chart-container {
+            margin: 30px 0;
+            padding: 20px;
+            background-color: white;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .tweet-example {
+            background-color: #f8f9fa;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 6px;
+            border-left: 4px solid #007bff;
+        }
+        .tweet-meta {
+            color: #666;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+        .category-section {
+            margin: 30px 0;
+        }
+        .relevance-badge {
+            background-color: #28a745;
+            color: white;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Informe de Incidentes de Seguridad</h1>
+        <p>Fecha: {{ date }}</p>
+
+        <div class="stats">
+            <div class="stat-card">
+                <h3>Total de Tweets</h3>
+                <p>{{ total_tweets }}</p>
+            </div>
+            {% for category, count in categories_count.items() %}
+            <div class="stat-card">
+                <h3>{{ category }}</h3>
+                <p>{{ count }}</p>
+            </div>
+            {% endfor %}
+        </div>
+
+        <div class="chart-container">
+            {{ category_chart | safe }}
+        </div>
+
+        <div class="chart-container">
+            {{ timeline_chart | safe }}
+        </div>
+
+        <div class="chart-container">
+            {{ relevance_chart | safe }}
+        </div>
+
+        <h2>Ejemplos más Relevantes por Categoría</h2>
+        {% for category, tweets in top_examples.items() %}
+        <div class="category-section">
+            <h3>{{ category }}</h3>
+            {% for tweet in tweets %}
+            <div class="tweet-example">
+                <p>{{ tweet.content }}</p>
+                <div class="tweet-meta">
+                    <span>@{{ tweet.author }}</span> |
+                    <span>{{ tweet.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</span> |
+                    <span class="relevance-badge">Relevancia: {{ tweet.relevance_score }}%</span>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endfor %}
+    </div>
+</body>
+</html> 
