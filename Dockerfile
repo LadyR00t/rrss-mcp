@@ -28,8 +28,15 @@ RUN poetry install --only main
 RUN python -m spacy download es_core_news_sm
 RUN python -m spacy download en_core_web_sm
 
+# Crear directorios necesarios
+RUN mkdir -p /app/reports /app/mcp/templates
+
 # Copiar el resto del código fuente
 COPY . .
+
+# Asegurar permisos correctos
+RUN chmod -R 755 /app/mcp/templates
+RUN chmod -R 755 /app/reports
 
 # Puerto para FastAPI
 EXPOSE 8000

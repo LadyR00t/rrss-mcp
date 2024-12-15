@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Panel de Control MCP</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <style>
+        .action-card {
+            transition: transform 0.2s;
+            margin-bottom: 20px;
+        }
+        .action-card:hover {
+            transform: translateY(-5px);
+        }
+        .status-badge {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+        }
+        .report-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .loading {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 1000;
+        }
+        .overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 999;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <div class="row mb-4">
+            <div class="col">
+                <h1>Panel de Control MCP</h1>
+                <p class="text-muted">Sistema de Análisis de Incidentes en Medios Sociales</p>
+            </div>
+            <div class="col-auto">
+                <a href="/config" class="btn btn-outline-primary">
+                    <i class="bi bi-gear"></i> Configuración
+                </a>
+            </div>
+        </div>
+
+        <!-- Estado del Sistema -->
+        <div class="row mb-4">
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-body">
+                        <h5 class="card-title">Estado del Sistema</h5>
+                        <div id="systemStatus">Cargando...</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-body">
+                        <h5 class="card-title">Tweets Recolectados</h5>
+                        <div id="tweetStats">Cargando...</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-body">
+                        <h5 class="card-title">Límites de API</h5>
+                        <div id="apiLimits">Cargando...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Acciones Principales -->
+        <div class="row mb-4">
+            <div class="col-md-4">
+                <div class="card action-card">
+                    <div class="card-body">
+                        <h5 class="card-title">Recolectar Tweets</h5>
+                        <p class="card-text">Inicia la recolección manual de tweets.</p>
+                        <button class="btn btn-primary" onclick="collectTweets()">
+                            <i class="bi bi-cloud-download"></i> Recolectar
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card action-card">
+                    <div class="card-body">
+                        <h5 class="card-title">Búsqueda Histórica</h5>
+                        <p class="card-text">Busca tweets en un rango de fechas.</p>
+                        <div class="mb-2">
+                            <label class="form-label">Fecha Inicio:</label>
+                            <input type="date" id="historicalStartDate" class="form-control mb-2">
+                            <label class="form-label">Fecha Fin (opcional):</label>
+                            <input type="date" id="historicalEndDate" class="form-control">
+                            <small class="text-muted">Máximo 7 días para API gratuita</small>
+                        </div>
+                        <button class="btn btn-primary" onclick="searchHistorical()">
+                            <i class="bi bi-search"></i> Buscar
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card action-card">
+                    <div class="card-body">
+                        <h5 class="card-title">Generar Informe</h5>
+                        <p class="card-text">Genera un informe para una fecha específica.</p>
+                        <div class="mb-2">
+                            <label class="form-label">Fecha del Informe:</label>
+                            <input type="date" id="reportDate" class="form-control">
+                            <small class="text-muted">Se generará el informe con el nombre report_YYYYMMDD.html</small>
+                        </div>
+                        <button class="btn btn-primary" onclick="generateReport()">
+                            <i class="bi bi-file-earmark-text"></i> Generar
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Lista de Informes -->
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">Informes Generados</h5>
+                <div class="report-list" id="reportList">
+                    <div class="text-center">Cargando informes...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="overlay" id="overlay"></div>
+    <div class="loading" id="loading">
+        <div class="spinner-border text-light" role="status">
+            <span class="visually-hidden">Cargando...</span>
+        </div>
+    </div>
+
+    <script>
+        // Funciones de utilidad
+        function showLoading() {
+            document.getElementById('overlay').style.display = 'block';
+            document.getElementById('loading').style.display = 'block';
+        }
+
+        function hideLoading() {
+            document.getElementById('overlay').style.display = 'none';
+            document.getElementById('loading').style.display = 'none';
+        }
+
+        function formatDate(date) {
+            return new Date(date).toLocaleDateString('es-ES', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
+            });
+        }
+
+        // Cargar estado del sistema
+        async function loadSystemStatus() {
+            try {
+                const response = await fetch('/health');
+                const data = await response.json();
+                document.getElementById('systemStatus').innerHTML = `
+                    <div class="d-flex align-items-center">
+                        <div class="spinner-grow text-success" role="status" style="width: 1rem; height: 1rem;"></div>
+                        <span class="ms-2">Sistema Activo</span>
+                    </div>
+                `;
+            } catch (error) {
+                document.getElementById('systemStatus').innerHTML = `
+                    <div class="text-danger">
+                        <i class="bi bi-exclamation-triangle"></i> Error de conexión
+                    </div>
+                `;
+            }
+        }
+
+        // Cargar estadísticas
+        async function loadStats() {
+            try {
+                const response = await fetch('/stats');
+                const data = await response.json();
+                document.getElementById('tweetStats').innerHTML = `
+                    <p class="mb-1">Total: ${data.total_tweets} tweets</p>
+                    <small class="text-muted">Última actualización: ${formatDate(data.last_update)}</small>
+                `;
+            } catch (error) {
+                document.getElementById('tweetStats').innerHTML = 'Error al cargar estadísticas';
+            }
+        }
+
+        // Cargar límites de API
+        async function loadApiLimits() {
+            try {
+                const response = await fetch('/api-limits');
+                const data = await response.json();
+                document.getElementById('apiLimits').innerHTML = `
+                    <p class="mb-1">Solicitudes restantes: ${data.limits.remaining_requests}</p>
+                    <small class="text-muted">Próximo reset: ${data.limits.next_reset ? formatDate(data.limits.next_reset) : 'N/A'}</small>
+                `;
+            } catch (error) {
+                document.getElementById('apiLimits').innerHTML = 'Error al cargar límites';
+            }
+        }
+
+        // Recolectar tweets
+        async function collectTweets() {
+            showLoading();
+            try {
+                const response = await fetch('/collect', { method: 'POST' });
+                const data = await response.json();
+                alert(`Recolección completada: ${data.resultados.tweets_procesados} tweets procesados`);
+                loadStats();
+                loadApiLimits();
+            } catch (error) {
+                alert('Error en la recolección de tweets');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        // Búsqueda histórica
+        async function searchHistorical() {
+            const startDate = document.getElementById('historicalStartDate').value;
+            const endDate = document.getElementById('historicalEndDate').value;
+            
+            if (!startDate) {
+                alert('Por favor, seleccione una fecha de inicio');
+                return;
+            }
+
+            // Validar rango de fechas
+            const start = new Date(startDate);
+            const end = endDate ? new Date(endDate) : new Date(start);
+            end.setHours(23, 59, 59);
+            
+            const diffDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+            if (diffDays > 7) {
+                alert('El rango máximo permitido es de 7 días para la API gratuita');
+                return;
+            }
+
+            showLoading();
+            try {
+                const response = await fetch('/collect/historical', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        start_date: `${startDate}T00:00:00Z`,
+                        end_date: endDate ? `${endDate}T23:59:59Z` : undefined
+                    })
+                });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    alert(`Búsqueda histórica completada:\n- Periodo: ${formatDate(data.periodo.inicio)} a ${formatDate(data.periodo.fin)}\n- Tweets procesados: ${data.resultados.processed || 0}`);
+                } else {
+                    throw new Error(data.detail || 'Error en la búsqueda histórica');
+                }
+                
+                loadStats();
+            } catch (error) {
+                alert(error.message || 'Error en la búsqueda histórica');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        // Generar informe
+        async function generateReport() {
+            const date = document.getElementById('reportDate').value;
+            if (!date) {
+                alert('Por favor, seleccione una fecha');
+                return;
+            }
+
+            showLoading();
+            try {
+                const response = await fetch('/generate-report', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ date: date })
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Error al generar el informe');
+                }
+                
+                const data = await response.json();
+                alert(`Informe generado correctamente:\n- Fecha: ${formatDate(data.fecha_reporte)}\n- Tweets incluidos: ${data.tweets_incluidos}\n- Archivo: ${data.report_url}`);
+                loadReports();
+            } catch (error) {
+                alert(error.message || 'Error al generar el informe');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        // Cargar lista de informes
+        async function loadReports() {
+            try {
+                const response = await fetch('/reports');
+                const reports = await response.json();
+                const reportList = document.getElementById('reportList');
+                
+                if (reports.length === 0) {
+                    reportList.innerHTML = '<div class="text-center text-muted">No hay informes generados</div>';
+                    return;
+                }
+
+                reportList.innerHTML = reports.map(report => `
+                    <div class="card mb-2">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <div>
+                                    <h6 class="mb-0">Informe del ${formatDate(report.date)}</h6>
+                                    <small class="text-muted">
+                                        ${report.total_tweets} tweets analizados
+                                    </small>
+                                </div>
+                                <a href="${report.report_path}" class="btn btn-sm btn-outline-primary" target="_blank">
+                                    <i class="bi bi-eye"></i> Ver
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                document.getElementById('reportList').innerHTML = 'Error al cargar informes';
+            }
+        }
+
+        // Inicialización
+        document.addEventListener('DOMContentLoaded', () => {
+            loadSystemStatus();
+            loadStats();
+            loadApiLimits();
+            loadReports();
+
+            // Actualizar cada minuto
+            setInterval(() => {
+                loadSystemStatus();
+                loadStats();
+                loadApiLimits();
+            }, 60000);
+        });
+    </script>
+</body>
+</html> 

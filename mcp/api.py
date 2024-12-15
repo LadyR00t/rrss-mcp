@@ -1,262 +1,431 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from typing import List, Optional
-from datetime import datetime, timedelta
-import os
+from fastapi.templating import Jinja2Templates
+from sqlalchemy.orm import Session
+from datetime import datetime, timedelta, timezone
+from typing import List, Dict, Optional
+from pydantic import BaseModel, Field
 import logging
-
-from .models import Tweet, Report, get_session, init_db, normalize_tweet_id
+import os
+from . import models
+from .models import ServiceConfig
 from .twitter_client import TwitterClient
-from .analyzer import ContentAnalyzer
-from .reporter import ReportGenerator
+from sqlalchemy import func
 
-# Configurar logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("mcp_api")
+# Configurar logger
+logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Sistema de Análisis de Incidentes en Medios Sociales")
+app = FastAPI()
 
-# Inicializar componentes
+# Configurar templates
+templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
+
+# Montar directorio de reportes como estático
+reports_dir = os.path.join(os.getcwd(), "reports")
+os.makedirs(reports_dir, exist_ok=True)
+app.mount("/reports", StaticFiles(directory=reports_dir), name="reports")
+
+# Configurar el cliente de Twitter
 twitter_client = TwitterClient()
-content_analyzer = ContentAnalyzer()
-report_generator = ReportGenerator()
 
-# Montar directorio de reportes
-app.mount("/reports", StaticFiles(directory="reports"), name="reports")
-
-def cleanup_old_data():
-    """Limpia datos antiguos según la configuración."""
-    session = get_session()
-    retention_days = int(os.getenv('DATA_RETENTION_DAYS', '7'))
-    cutoff_date = datetime.utcnow() - timedelta(days=retention_days)
-    
-    deleted_count = session.query(Tweet).filter(Tweet.created_at < cutoff_date).delete()
-    session.commit()
-    logger.info(f"Limpieza completada: {deleted_count} tweets eliminados")
-    return deleted_count
-
-async def process_tweets():
-    """Procesa nuevos tweets y los almacena en la base de datos."""
-    logger.info("Iniciando proceso de recolección de tweets")
-    
+# Obtener una sesión de base de datos
+def get_db():
+    """Obtener una sesión de base de datos."""
+    db = models.get_session()
     try:
-        tweets = twitter_client.get_recent_tweets()
-        logger.info(f"Obtenidos {len(tweets)} tweets de la API")
-        
-        processed_count = 0
-        skipped_count = 0
-        failed_count = 0
-        categories_found = {}
-        
-        for tweet_data in tweets:
-            # Crear una nueva sesión para cada tweet
-            session = get_session()
-            try:
-                with session.begin():
-                    # Convertir tweet_id a entero
-                    try:
-                        tweet_id = normalize_tweet_id(tweet_data['tweet_id'])
-                        logger.debug(f"Tweet ID normalizado: {tweet_id}")
-                    except ValueError as e:
-                        logger.error(f"Error al normalizar tweet_id: {str(e)}")
-                        failed_count += 1
-                        continue
-                    
-                    # Verificar si el tweet ya existe
-                    existing = session.query(Tweet).filter_by(tweet_id=tweet_id).first()
-                    if existing:
-                        logger.debug(f"Tweet {tweet_id} ya existe en la base de datos")
-                        skipped_count += 1
-                        continue
-                        
-                    # Analizar contenido
-                    category, relevance = content_analyzer.analyze_tweet(
-                        tweet_data['content'],
-                        tweet_data['language']
-                    )
-                    
-                    if category and relevance > 0:
-                        tweet = Tweet(
-                            tweet_id=tweet_id,
-                            content=tweet_data['content'],
-                            author=tweet_data['author'],
-                            created_at=tweet_data['created_at'],
-                            language=tweet_data['language'],
-                            category=category,
-                            relevance_score=relevance,
-                            tweet_metadata=tweet_data['metadata']
-                        )
-                        session.add(tweet)
-                        processed_count += 1
-                        categories_found[category] = categories_found.get(category, 0) + 1
-                        logger.debug(f"Tweet {tweet_id} procesado exitosamente")
-                    else:
-                        logger.debug(f"Tweet {tweet_id} descartado por baja relevancia")
-                        failed_count += 1
-                        
-            except Exception as e:
-                logger.error(f"Error procesando tweet {tweet_data.get('tweet_id', 'unknown')}: {str(e)}")
-                failed_count += 1
-            finally:
-                session.close()
-        
-        logger.info(f"Proceso completado: {processed_count} tweets procesados, {skipped_count} omitidos, {failed_count} fallidos")
-        logger.info(f"Categorías encontradas: {categories_found}")
-        
-        return {
-            "processed": processed_count,
-            "skipped": skipped_count,
-            "failed": failed_count,
-            "categories": categories_found
-        }
-        
-    except Exception as e:
-        logger.error(f"Error en el proceso de recolección: {str(e)}", exc_info=True)
-        raise
+        yield db
+    finally:
+        db.close()
 
 @app.on_event("startup")
 async def startup_event():
-    """Inicializa la base de datos y crea las tablas."""
-    logger.info("Iniciando aplicación...")
-    init_db()
-    logger.info("Base de datos inicializada")
+    """Evento de inicio de la aplicación."""
+    models.setup_database()
 
 @app.get("/health")
-async def health_check():
+def health_check():
     """Endpoint de verificación de salud."""
     return {"status": "healthy"}
 
-@app.post("/collect")
-async def collect_tweets(background_tasks: BackgroundTasks):
-    """Inicia la recolección de tweets."""
+@app.get("/api/config")
+def get_configs(db: Session = Depends(get_db)):
+    """Obtener todas las configuraciones."""
     try:
-        logger.info("Iniciando recolección de tweets")
-        results = await process_tweets()
+        configs = db.query(models.ServiceConfig).all()
+        if not configs:
+            logger.warning("No se encontraron configuraciones")
+        return [{"key": c.key, "value": c.value, "description": c.description} for c in configs]
+    except Exception as e:
+        logger.error(f"Error al obtener configuraciones: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error al obtener configuraciones")
+
+@app.put("/api/config/{key}")
+def update_config(
+    key: str,
+    config: models.ConfigUpdate,
+    db: Session = Depends(get_db)
+):
+    """Actualizar una configuración."""
+    try:
+        # Validar que la configuración existe
+        existing_config = db.query(models.ServiceConfig).filter(
+            models.ServiceConfig.key == key
+        ).first()
+        
+        if not existing_config:
+            raise HTTPException(status_code=404, detail=f"Configuración {key} no encontrada")
+        
+        # Validaciones específicas según el tipo de configuración
+        if key == "TWITTER_API_TIER":
+            if not models.ConfigUpdate.validate_tier(config.value):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Valor inválido para TWITTER_API_TIER. Debe ser uno de: {list(models.TWITTER_TIERS.keys())}"
+                )
+        elif key in models.TIER_DEPENDENT_CONFIGS:
+            if not models.ConfigUpdate.validate_numeric(config.value):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{key} debe ser un número entero positivo"
+                )
+        
+        # Actualizar la configuración
+        try:
+            models.ServiceConfig.set_config(
+                db,
+                key,
+                config.value,
+                config.description
+            )
+            db.commit()
+            return {"key": key, "value": config.value}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error al actualizar configuración: {str(e)}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Error al actualizar configuración")
+
+def normalize_datetime(dt: datetime) -> datetime:
+    """Normaliza un datetime a UTC sin zona horaria."""
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+@app.get("/stats")
+def get_stats(db: Session = Depends(get_db)):
+    """Obtener estadísticas del sistema."""
+    try:
+        # Obtener estadísticas de tweets
+        total_tweets = db.query(models.Tweet).count()
+        categories = db.query(
+            models.Tweet.category,
+            func.count(models.Tweet.id).label('count')
+        ).group_by(models.Tweet.category).all()
+        
+        # Obtener última actualización
+        last_tweet = db.query(models.Tweet).order_by(
+            models.Tweet.created_at.desc()
+        ).first()
         
         return {
-            "message": "Recolección de tweets completada",
+            "total_tweets": total_tweets,
+            "categories": {cat: count for cat, count in categories},
+            "last_update": last_tweet.created_at if last_tweet else None
+        }
+    except Exception as e:
+        logger.error(f"Error al obtener estadísticas: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Error al obtener estadísticas"
+        )
+
+@app.post("/collect/historical")
+async def collect_historical_tweets(
+    date_range: models.DateRange,
+    db: Session = Depends(get_db)
+):
+    """Recolectar tweets históricos."""
+    try:
+        # Normalizar fechas
+        start_date = normalize_datetime(date_range.start_date)
+        current_time = normalize_datetime(datetime.utcnow())
+        
+        # Validar fechas
+        max_days = int(models.ServiceConfig.get_config(db, 'MAX_HISTORICAL_DAYS', '7'))
+        if (current_time - start_date).days > max_days:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No se pueden buscar tweets de más de {max_days} días atrás"
+            )
+        
+        # Configurar fecha final
+        end_date = None
+        if date_range.end_date:
+            end_date = normalize_datetime(date_range.end_date)
+            if end_date > current_time:
+                end_date = current_time
+        
+        tweets = await twitter_client.get_historical_tweets(
+            start_date,
+            end_date
+        )
+        
+        if not tweets:
+            return {
+                "message": "No se encontraron tweets en el rango especificado",
+                "resultados": {
+                    "tweets_procesados": 0,
+                    "tweets_omitidos": 0,
+                    "tweets_fallidos": 0,
+                    "categorias": {}
+                }
+            }
+        
+        results = process_tweets(db, tweets)
+        return {
+            "message": "Tweets históricos recolectados exitosamente",
             "resultados": {
                 "tweets_procesados": results["processed"],
                 "tweets_omitidos": results["skipped"],
                 "tweets_fallidos": results["failed"],
-                "categorias_encontradas": results["categories"]
+                "categorias": results["categories"]
             }
-        }
-    except Exception as e:
-        logger.error(f"Error en la recolección de tweets: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error en la recolección de tweets: {str(e)}"
-        )
-
-@app.post("/generate-report")
-async def generate_report(date: Optional[str] = None):
-    """Genera un informe para la fecha especificada."""
-    try:
-        # Verificar si hay tweets en la base de datos
-        session = get_session()
-        report_date = datetime.strptime(date, '%Y-%m-%d') if date else datetime.utcnow()
-        
-        # Definir el rango de fechas para el reporte
-        start_date = report_date.replace(hour=0, minute=0, second=0, microsecond=0)
-        end_date = start_date + timedelta(days=1)
-        
-        # Contar tweets en el rango de fechas
-        tweet_count = session.query(Tweet).filter(
-            Tweet.created_at >= start_date,
-            Tweet.created_at < end_date
-        ).count()
-        
-        if tweet_count == 0:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No hay tweets disponibles para la fecha {start_date.date()}. Por favor, ejecute primero /collect para recolectar datos."
-            )
-            
-        report_path = report_generator.generate_daily_report(report_date)
-        
-        if not report_path:
-            raise HTTPException(
-                status_code=500,
-                detail="Error al generar el informe. Verifica los logs para más detalles."
-            )
-            
-        return {
-            "message": "Informe generado correctamente",
-            "report_url": f"/reports/{os.path.basename(report_path)}",
-            "tweets_incluidos": tweet_count,
-            "fecha_reporte": start_date.date().isoformat()
         }
     except HTTPException:
         raise
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail="Formato de fecha inválido. Use YYYY-MM-DD"
-        )
     except Exception as e:
+        logger.error(f"Error en búsqueda histórica: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail=f"Error inesperado: {str(e)}"
+            detail=f"Error en búsqueda histórica: {str(e)}"
         )
 
-@app.get("/stats")
-async def get_stats():
-    """Obtiene estadísticas generales."""
-    session = get_session()
-    
-    total_tweets = session.query(Tweet).count()
-    
-    if total_tweets == 0:
-        return {
-            "message": "No hay datos disponibles. Ejecute primero /collect para recolectar tweets.",
-            "total_tweets": 0,
-            "categories": {},
-            "last_update": datetime.utcnow()
-        }
-    
-    categories = session.query(Tweet.category).distinct().all()
-    category_counts = {}
-    
-    for (category,) in categories:
-        count = session.query(Tweet).filter_by(category=category).count()
-        category_counts[category] = count
+@app.post("/collect")
+async def collect_tweets(db: Session = Depends(get_db)):
+    """Recolectar tweets recientes."""
+    try:
+        # Verificar configuración
+        token = ServiceConfig.get_config(db, "TWITTER_BEARER_TOKEN")
+        if not token:
+            raise HTTPException(
+                status_code=400,
+                detail="No se ha configurado el token de autenticación"
+            )
         
+        # Verificar límites
+        limits = twitter_client.get_limits_info()
+        if limits["remaining_requests"] <= 0:
+            raise HTTPException(
+                status_code=429,
+                detail="Se ha alcanzado el límite de solicitudes. Por favor, espere."
+            )
+        
+        # Obtener tweets
+        tweets = await twitter_client.get_recent_tweets()
+        if not tweets:
+            return {
+                "message": "No se encontraron tweets nuevos",
+                "resultados": {
+                    "tweets_procesados": 0,
+                    "tweets_omitidos": 0,
+                    "tweets_fallidos": 0,
+                    "categorias": {}
+                }
+            }
+        
+        # Procesar tweets
+        results = process_tweets(db, tweets)
+        return {
+            "message": "Tweets recolectados exitosamente",
+            "resultados": {
+                "tweets_procesados": results["processed"],
+                "tweets_omitidos": results["skipped"],
+                "tweets_fallidos": results["failed"],
+                "categorias": results["categories"]
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error al recolectar tweets: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al recolectar tweets: {str(e)}"
+        )
+
+@app.post("/generate-report")
+def generate_report(
+    report_date: models.ReportDate,
+    db: Session = Depends(get_db)
+):
+    """Generar informe para una fecha específica."""
+    # Obtener tweets del día
+    start_date = report_date.date.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_date = start_date + timedelta(days=1)
+    
+    tweets = db.query(models.Tweet).filter(
+        models.Tweet.created_at >= start_date,
+        models.Tweet.created_at < end_date
+    ).all()
+    
+    if not tweets:
+        raise HTTPException(
+            status_code=404,
+            detail="No hay tweets disponibles para generar el informe"
+        )
+    
+    # Generar informe
+    categories = {}
+    for tweet in tweets:
+        categories[tweet.category] = categories.get(tweet.category, 0) + 1
+    
+    report = models.Report(
+        date=start_date.date(),
+        total_tweets=len(tweets),
+        categories=categories,
+        report_url=f"/reports/{start_date.strftime('%Y-%m-%d')}.html"
+    )
+    
+    db.add(report)
+    db.commit()
+    
     return {
-        "total_tweets": total_tweets,
-        "categories": category_counts,
-        "last_update": datetime.utcnow()
+        "message": "Informe generado exitosamente",
+        "report_url": report.report_url
     }
 
-@app.post("/cleanup")
-async def cleanup_data():
-    """Limpia datos antiguos manualmente."""
-    try:
-        cleanup_old_data()
-        return {"message": "Limpieza completada"}
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error durante la limpieza: {str(e)}"
-        )
-
 @app.get("/api-limits")
-async def get_api_limits():
-    """Obtiene información sobre los límites de la API de Twitter."""
+def get_api_limits(db: Session = Depends(get_db)):
+    """Obtener información sobre límites de API."""
+    tier = models.ServiceConfig.get_config(db, "TWITTER_API_TIER", "free")
+    limits = twitter_client.get_limits_info()
+    
+    return {
+        "tier": {
+            "nombre": tier,
+            "descripcion": "Tier actual de la API"
+        },
+        "limites_configurados": {
+            "dias_historicos": int(models.ServiceConfig.get_config(db, "MAX_HISTORICAL_DAYS", "7")),
+            "solicitudes_por_ventana": int(models.ServiceConfig.get_config(db, "RATE_LIMIT_REQUESTS", "50")),
+            "ventana_tiempo": int(models.ServiceConfig.get_config(db, "RATE_LIMIT_WINDOW", "900"))
+        },
+        "estado_actual": {
+            "solicitudes_restantes": limits["remaining_requests"],
+            "ultima_solicitud": limits["last_request"],
+            "siguiente_reinicio": limits["next_reset"]
+        },
+        "recomendaciones": [
+            "Considere actualizar a un tier superior si necesita más capacidad",
+            "Distribuya las solicitudes uniformemente durante el día",
+            "Utilice la búsqueda histórica con moderación"
+        ]
+    }
+
+def process_tweets(db: Session, tweets: List[Dict]) -> Dict:
+    """Procesar tweets y guardarlos en la base de datos."""
+    results = {
+        "processed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "categories": {}
+    }
+    
+    for tweet in tweets:
+        try:
+            # Verificar si el tweet ya existe
+            existing = db.query(models.Tweet).filter_by(
+                tweet_id=int(tweet["id"])
+            ).first()
+            
+            if existing:
+                results["skipped"] += 1
+                continue
+            
+            # Crear nuevo tweet
+            new_tweet = models.Tweet(
+                tweet_id=int(tweet["id"]),
+                content=tweet["text"],
+                author=tweet["author_id"],
+                created_at=datetime.fromisoformat(tweet["created_at"].replace("Z", "+00:00")),
+                language=tweet.get("lang", "es"),
+                category=tweet.get("category", "otros"),
+                relevance_score=float(tweet.get("relevance_score", 0.5))
+            )
+            
+            db.add(new_tweet)
+            results["processed"] += 1
+            results["categories"][new_tweet.category] = results["categories"].get(
+                new_tweet.category, 0
+            ) + 1
+            
+        except Exception as e:
+            results["failed"] += 1
+            continue
+    
+    db.commit()
+    return results 
+
+def cleanup_old_data(db: Session):
+    """Limpiar datos antiguos basado en la configuración de retención."""
     try:
-        limits = twitter_client.get_limits_info()
+        # Obtener días de retención de la configuración
+        retention_days = int(ServiceConfig.get_config(db, "DATA_RETENTION_DAYS", "7"))
+        cutoff_date = datetime.utcnow() - timedelta(days=retention_days)
+        
+        # Eliminar tweets antiguos
+        deleted_tweets = db.query(models.Tweet).filter(
+            models.Tweet.created_at < cutoff_date
+        ).delete()
+        
+        # Eliminar informes antiguos
+        deleted_reports = db.query(models.Report).filter(
+            models.Report.date < cutoff_date.date()
+        ).delete()
+        
+        db.commit()
+        
+        logger.info(
+            f"Limpieza completada: {deleted_tweets} tweets y {deleted_reports} "
+            f"informes más antiguos que {retention_days} días fueron eliminados"
+        )
+        
         return {
-            "status": "ok",
-            "limits": limits,
-            "recomendaciones": [
-                "La API gratuita permite 50 solicitudes cada 15 minutos",
-                "Máximo 100 tweets por solicitud",
-                "Solo tweets de los últimos 7 días",
-                "Considere espaciar las solicitudes de recolección"
-            ]
+            "tweets_eliminados": deleted_tweets,
+            "informes_eliminados": deleted_reports,
+            "fecha_corte": cutoff_date.isoformat()
         }
+        
     except Exception as e:
+        logger.error(f"Error durante la limpieza de datos: {str(e)}")
+        db.rollback()
         raise HTTPException(
             status_code=500,
-            detail=f"Error al obtener límites: {str(e)}"
+            detail=f"Error durante la limpieza de datos: {str(e)}"
         ) 
+
+@app.get("/", response_class=HTMLResponse)
+async def get_dashboard(request: Request):
+    """Renderizar el dashboard."""
+    return templates.TemplateResponse("dashboard.html", {"request": request})
+
+@app.get("/config", response_class=HTMLResponse)
+async def get_config_page(request: Request):
+    """Renderizar la página de configuración."""
+    return templates.TemplateResponse("config.html", {"request": request})
+
+@app.get("/reports/{report_name}")
+async def get_report(report_name: str):
+    """Servir un informe específico."""
+    report_path = os.path.join(reports_dir, report_name)
+    if not os.path.exists(report_path):
+        raise HTTPException(status_code=404, detail="Informe no encontrado")
+    
+    with open(report_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    return HTMLResponse(content=content) 

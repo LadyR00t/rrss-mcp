@@ -1,6 +1,6 @@
 import tweepy
 from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 import os
 from dotenv import load_dotenv
 import time
@@ -67,7 +67,7 @@ class TwitterClient:
                 return False, int(wait_time)
         return True, 0
 
-    def get_recent_tweets(self) -> List[Dict]:
+    async def get_recent_tweets(self) -> List[Dict]:
         """Obtiene tweets recientes basados en las palabras clave."""
         logger.info("Iniciando búsqueda de tweets recientes...")
         
@@ -90,6 +90,10 @@ class TwitterClient:
                 expansions=['author_id']
             )
             
+            if not response or not response.data:
+                logger.info("No se encontraron tweets que coincidan con los criterios")
+                return []
+            
             # Actualizar contadores de límite de tasa
             self.last_request_time = datetime.now()
             self.remaining_requests = int(response.meta.get('remaining', 0))
@@ -104,11 +108,11 @@ class TwitterClient:
             for tweet in response.data or []:
                 author = users.get(tweet.author_id)
                 tweet_data = {
-                    'tweet_id': tweet.id,
-                    'content': tweet.text,
-                    'author': author.username if author else 'unknown',
-                    'created_at': tweet.created_at,
-                    'language': tweet.lang,
+                    'id': str(tweet.id),
+                    'text': tweet.text,
+                    'author_id': author.username if author else str(tweet.author_id),
+                    'created_at': tweet.created_at.isoformat(),
+                    'lang': tweet.lang,
                     'metadata': {
                         'author_id': tweet.author_id,
                         'collected_at': datetime.now().isoformat(),
@@ -118,13 +122,17 @@ class TwitterClient:
                     }
                 }
                 tweets_data.append(tweet_data)
-                logger.debug(f"Tweet procesado: {tweet.id} de @{tweet_data['author']}")
+                logger.debug(f"Tweet procesado: {tweet.id} de @{tweet_data['author_id']}")
             
             logger.info(f"Procesados {len(tweets_data)} tweets en total")
                 
         except tweepy.TooManyRequests as e:
             reset_time = getattr(e, 'reset_time', 900)
             msg = f"Límite de tasa excedido. Reset en {reset_time} segundos."
+            logger.error(msg)
+            raise Exception(msg)
+        except tweepy.Unauthorized:
+            msg = "Token de autenticación inválido o expirado"
             logger.error(msg)
             raise Exception(msg)
         except Exception as e:
@@ -176,3 +184,85 @@ class TwitterClient:
         except Exception as e:
             print(f"Error al obtener tweet {tweet_id}: {str(e)}")
             return None 
+
+    async def get_historical_tweets(self, start_date: datetime, end_date: Optional[datetime] = None) -> List[Dict]:
+        """Obtiene tweets históricos en un rango de fechas."""
+        logger.info(f"Iniciando búsqueda histórica desde {start_date} hasta {end_date}")
+        
+        can_request, wait_time = self._check_rate_limit()
+        if not can_request:
+            msg = f"Límite de tasa excedido. Por favor, espere {wait_time} segundos."
+            logger.error(msg)
+            raise Exception(msg)
+
+        query = self._build_query()
+        tweets_data = []
+        
+        try:
+            logger.info(f"Ejecutando búsqueda histórica con max_results={self.tweets_per_hour}")
+            
+            # Convertir fechas al formato requerido por Twitter
+            start_time = start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
+            end_time = end_date.strftime("%Y-%m-%dT%H:%M:%SZ") if end_date else None
+            
+            response = self.client.search_recent_tweets(
+                query=query,
+                max_results=self.tweets_per_hour,
+                tweet_fields=['created_at', 'lang', 'author_id', 'public_metrics'],
+                user_fields=['username', 'description'],
+                expansions=['author_id'],
+                start_time=start_time,
+                end_time=end_time
+            )
+            
+            if not response or not response.data:
+                logger.info("No se encontraron tweets históricos")
+                return []
+            
+            # Actualizar contadores de límite de tasa
+            self.last_request_time = datetime.now()
+            self.remaining_requests = int(response.meta.get('remaining', 0))
+            
+            logger.info(f"Respuesta recibida. Meta: {response.meta}")
+            logger.info(f"Includes: {response.includes if hasattr(response, 'includes') else 'No includes'}")
+            logger.info(f"Datos recibidos: {len(response.data) if response.data else 0} tweets")
+            
+            # Crear diccionario de usuarios
+            users = {user.id: user for user in response.includes['users']} if response.includes else {}
+            
+            for tweet in response.data or []:
+                author = users.get(tweet.author_id)
+                tweet_data = {
+                    'id': str(tweet.id),
+                    'text': tweet.text,
+                    'author_id': author.username if author else str(tweet.author_id),
+                    'created_at': tweet.created_at.isoformat(),
+                    'lang': tweet.lang,
+                    'metadata': {
+                        'author_id': tweet.author_id,
+                        'collected_at': datetime.now().isoformat(),
+                        'rate_limit_remaining': self.remaining_requests,
+                        'metrics': tweet.public_metrics if hasattr(tweet, 'public_metrics') else {},
+                        'author_description': author.description if author else None,
+                        'search_type': 'historical'
+                    }
+                }
+                tweets_data.append(tweet_data)
+                logger.debug(f"Tweet histórico procesado: {tweet.id} de @{tweet_data['author_id']}")
+            
+            logger.info(f"Procesados {len(tweets_data)} tweets históricos en total")
+                
+        except tweepy.TooManyRequests as e:
+            reset_time = getattr(e, 'reset_time', 900)
+            msg = f"Límite de tasa excedido en búsqueda histórica. Reset en {reset_time} segundos."
+            logger.error(msg)
+            raise Exception(msg)
+        except tweepy.Unauthorized:
+            msg = "Token de autenticación inválido o expirado"
+            logger.error(msg)
+            raise Exception(msg)
+        except Exception as e:
+            logger.error(f"Error inesperado en búsqueda histórica: {str(e)}", exc_info=True)
+            raise
+            
+        return tweets_data

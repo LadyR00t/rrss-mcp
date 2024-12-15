@@ -1,189 +1,213 @@
-# Sistema de Análisis de Incidentes en Medios Sociales
+# Sistema de Análisis de Incidentes en Medios Sociales con MCP
 
-Sistema de monitoreo y análisis de incidentes de seguridad en redes sociales usando el [Model Context Protocol (MCP)](https://modelcontextprotocol.io/introduction).
+Sistema avanzado de monitoreo y análisis de incidentes de seguridad en redes sociales implementando el [Model Context Protocol (MCP)](https://modelcontextprotocol.io/introduction).
 
-## Características
+## Características Principales
 
-- 🔍 Monitoreo de Twitter para incidentes de seguridad
-- 🤖 Análisis automático de contenido usando NLP
-- 📊 Generación de informes con gráficos y estadísticas
-- 🔄 Actualización automática cada hora
-- 🌍 Soporte para español e inglés
+### Implementación MCP
+- 🔄 Protocolo MCP completo para interacción estructurada
+- 📝 Gestión de contexto y estado de conversaciones
+- 🔍 Validación de funciones y parámetros
+- 🚦 Control de flujo y manejo de errores
+- 📊 Retroalimentación y métricas
+
+### Análisis de Seguridad
+- 🔍 Monitoreo en tiempo real de Twitter
+- 🤖 Análisis NLP con modelos spaCy
+- 📊 Informes detallados y visualizaciones
+- 🔄 Actualización automática horaria
+- 🌍 Soporte multilingüe (ES/EN)
+
+### Características Técnicas
+- 🔐 Sistema de roles y permisos
+- 📡 API RESTful con FastAPI
+- 🗄️ Persistencia PostgreSQL
+- 🐳 Contenedores Docker
+- ✅ Pruebas unitarias completas
 
 ## Requisitos
 
 - Python 3.9+
 - Docker y Docker Compose
 - API Key de Twitter (Bearer Token)
-- PostgreSQL (incluido en Docker Compose)
+- PostgreSQL (incluido en Docker)
 
-## Instalación
+## Instalación Rápida
 
-1. Clona este repositorio:
+1. Clonar el repositorio:
 ```bash
 git clone <repositorio>
 cd <directorio>
 ```
 
-2. Copia el archivo de ejemplo de variables de entorno:
+2. Configurar variables de entorno:
 ```bash
 cp .env.example .env
+# Editar .env con tus credenciales
 ```
 
-3. Edita el archivo `.env` con tus credenciales:
-```env
-# Twitter API v2 Credentials
-TWITTER_BEARER_TOKEN=your_bearer_token_here
-
-# PostgreSQL Database
-POSTGRES_USER=mcp_user
-POSTGRES_PASSWORD=your_password_here
-POSTGRES_DB=mcp_incidents
-POSTGRES_HOST=db
-POSTGRES_PORT=5432
-
-# Application Settings
-DATA_RETENTION_DAYS=7
-TWEETS_PER_HOUR=20
-KEYWORDS=ransomware,phishing,data_breach
-```
-
-4. Construye y ejecuta los contenedores:
+3. Iniciar con Docker:
 ```bash
 docker-compose up --build
 ```
 
 ## Uso del Sistema
 
-### 1. Verificación de Límites de API
+### 1. Interfaz Web
 
-Antes de comenzar, verifica los límites de la API:
+Accede a las interfaces web:
+- Dashboard: `http://localhost:8000/`
+- Configuración: `http://localhost:8000/config`
+- Informes: `http://localhost:8000/reports/{YYYY-MM-DD}.html`
+
+### 2. API REST
+
+#### Configuración
 ```bash
-curl -X GET http://localhost:8000/api-limits
+# Obtener configuración actual
+curl -X GET http://localhost:8000/api/config
+
+# Actualizar configuración
+curl -X PUT http://localhost:8000/api/config/TWITTER_API_TIER \
+  -H "Content-Type: application/json" \
+  -d '{"value": "basic", "description": "Actualizar a tier básico"}'
 ```
 
-Respuesta:
-```json
-{
-    "status": "ok",
-    "limits": {
-        "remaining_requests": 50,
-        "last_request": null,
-        "next_reset": null,
-        "tweets_per_request": 20,
-        "max_requests_per_15min": 50
-    },
-    "recomendaciones": [
-        "La API gratuita permite 50 solicitudes cada 15 minutos",
-        "Máximo 100 tweets por solicitud",
-        "Solo tweets de los últimos 7 días",
-        "Considere espaciar las solicitudes de recolección"
-    ]
-}
-```
-
-### 2. Recolección de Tweets
-
-Para iniciar la recolección:
+#### Recolección de Datos
 ```bash
+# Recolección manual
 curl -X POST http://localhost:8000/collect
+
+# Búsqueda histórica
+curl -X POST http://localhost:8000/collect/historical \
+  -H "Content-Type: application/json" \
+  -d '{"start_date": "2023-12-01T00:00:00Z", "end_date": "2023-12-02T00:00:00Z"}'
 ```
 
-Respuesta:
-```json
-{
-    "message": "Recolección de tweets completada",
-    "tweets_procesados": 15
-}
-```
-
-### 3. Consulta de Estadísticas
-
-Para ver las estadísticas actuales:
+#### Generación de Informes
 ```bash
-curl -X GET http://localhost:8000/stats
+# Generar informe
+curl -X POST http://localhost:8000/generate-report \
+  -H "Content-Type: application/json" \
+  -d '{"date": "2023-12-12T00:00:00Z"}'
 ```
 
-Respuesta:
-```json
-{
-    "total_tweets": 15,
-    "categories": {
-        "ransomware": 5,
-        "phishing": 7,
-        "data_breach": 3
-    },
-    "last_update": "2023-12-12T16:30:00Z"
-}
+### 3. Uso del Protocolo MCP
+
+```python
+from mcp.client import MCPClient
+from mcp.mcp_core import MCPMessage, MCPRole, MCPMessageType, MCPRequest
+
+# Inicializar cliente
+client = MCPClient(api_key="your_api_key")
+
+# Registrar función
+client.register_function(
+    name="collect_tweets",
+    description="Recolecta tweets recientes",
+    parameters={},
+    required=[]
+)
+
+# Crear solicitud
+request = MCPRequest(
+    conversation_id="unique_id",
+    message=MCPMessage(
+        role=MCPRole.USER,
+        type=MCPMessageType.TEXT,
+        content="Recolectar tweets sobre ciberseguridad"
+    )
+)
+
+# Generar respuesta
+response = await client.generate_response(request)
+
+# Actualizar estado
+client.update_conversation_state("unique_id", {"last_collection": "2023-12-12"})
 ```
 
-### 4. Generación de Informes
+## Configuración Avanzada
 
-Para generar un informe:
-```bash
-# Informe del día actual
-curl -X POST http://localhost:8000/generate-report
+### Tiers de API
+- **Free**: 50 solicitudes/15min, máx 7 días históricos
+- **Basic**: 150 solicitudes/15min, máx 30 días históricos
+- **Pro**: 300 solicitudes/15min, máx 90 días históricos
 
-# Informe de una fecha específica
-curl -X POST "http://localhost:8000/generate-report?date=2023-12-12"
+### Variables de Entorno
+```env
+# API Twitter
+TWITTER_BEARER_TOKEN=your_token_here
+TWITTER_API_TIER=basic
+
+# Base de Datos
+POSTGRES_USER=mcp_user
+POSTGRES_PASSWORD=secure_password
+POSTGRES_DB=mcp_incidents
+POSTGRES_HOST=db
+POSTGRES_PORT=5432
+
+# Configuración App
+DATA_RETENTION_DAYS=7
+TWEETS_PER_HOUR=15
+ENABLE_MONITORING=true
+MONITORING_INTERVAL=3600
+
+# Keywords (separados por comas)
+KEYWORDS=ciberseguridad,cybersecurity,hacking,infosec,malware,ransomware,phishing
 ```
 
-Respuesta:
-```json
-{
-    "message": "Informe generado correctamente",
-    "report_url": "/reports/report_20231212.html",
-    "tweets_incluidos": 15,
-    "fecha_reporte": "2023-12-12"
-}
+## Estructura del Proyecto
 ```
-
-### 5. Acceso a los Informes
-
-Los informes están disponibles en:
-- `http://localhost:8000/reports/report_YYYYMMDD.html`
-
-### 6. Limpieza Manual de Datos
-
-Para limpiar datos antiguos:
-```bash
-curl -X POST http://localhost:8000/cleanup
+mcp/
+├── __init__.py
+├── api.py           # API REST
+├── client.py        # Cliente MCP
+├── mcp_core.py      # Implementación MCP
+├── models.py        # Modelos de datos
+├── analyzer.py      # Análisis NLP
+├── reporter.py      # Generación informes
+├── scheduler.py     # Tareas programadas
+└── templates/       # Plantillas UI
+    ├── dashboard.html
+    ├── config.html
+    └── daily_report.html
 ```
 
 ## Tareas Automáticas
 
 El sistema ejecuta automáticamente:
-- Recolección de tweets cada hora
-- Generación de informes diarios (00:05)
-- Limpieza de datos antiguos (00:30)
+- Recolección de tweets (cada hora)
+- Generación de informes (00:05 UTC)
+- Limpieza de datos antiguos (00:30 UTC)
 
-## Limitaciones de la API Gratuita
+## Desarrollo y Pruebas
 
-- 50 solicitudes cada 15 minutos
-- Máximo 100 tweets por solicitud
-- Solo tweets de los últimos 7 días
-- 500,000 tweets por mes
+### Ejecutar Pruebas
+```bash
+# Instalar dependencias de desarrollo
+poetry install --with dev
 
-## Recomendaciones de Uso
+# Ejecutar pruebas
+pytest
 
-1. **Ajuste de Frecuencia**:
-   - Reduzca `TWEETS_PER_HOUR` si encuentra límites de tasa
-   - Use el endpoint `/api-limits` para monitorear el uso
+# Ejecutar pruebas con cobertura
+pytest --cov=mcp
+```
 
-2. **Optimización de Búsqueda**:
-   - Ajuste las palabras clave en `KEYWORDS`
-   - Balance entre especificidad y cobertura
+### Convenciones de Código
+- Seguimos PEP 8
+- Documentación en español
+- Tipos estáticos con mypy
+- Formateo con black
 
-3. **Mantenimiento**:
-   - Monitoree el espacio en disco
-   - Revise los logs regularmente
-   - Ajuste `DATA_RETENTION_DAYS` según necesidad
+## Contribuir
 
-## Documentación API
-
-La documentación completa de la API está disponible en:
-- `http://localhost:8000/docs`
+1. Fork el repositorio
+2. Crea una rama (`git checkout -b feature/amazing_feature`)
+3. Commit tus cambios (`git commit -m 'Add amazing feature'`)
+4. Push a la rama (`git push origin feature/amazing_feature`)
+5. Abre un Pull Request
 
 ## Licencia
 
-MIT
+Este proyecto está licenciado bajo MIT - ver el archivo [LICENSE](LICENSE) para más detalles.

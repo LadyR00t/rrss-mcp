@@ -1,1 +1,159 @@
- 
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configuración MCP</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .config-card {
+            margin-bottom: 20px;
+        }
+        .save-feedback {
+            display: none;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <h1>Configuración del Sistema</h1>
+        <div class="row mt-4" id="configContainer">
+            <!-- Las tarjetas de configuración se cargarán aquí -->
+        </div>
+    </div>
+
+    <template id="configCardTemplate">
+        <div class="col-md-6 config-card">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title"></h5>
+                    <p class="card-text description text-muted"></p>
+                    <div class="input-group">
+                        <input type="text" class="form-control config-value">
+                        <button class="btn btn-primary save-btn">Guardar</button>
+                    </div>
+                    <div class="alert alert-success save-feedback">
+                        Configuración guardada correctamente
+                    </div>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <script>
+        async function loadConfigs() {
+            try {
+                const response = await fetch('/api/config');
+                const configs = await response.json();
+                const container = document.getElementById('configContainer');
+                const template = document.getElementById('configCardTemplate');
+
+                configs.forEach(config => {
+                    const card = template.content.cloneNode(true);
+                    card.querySelector('.card-title').textContent = config.key;
+                    card.querySelector('.description').textContent = config.description;
+                    
+                    const input = card.querySelector('.config-value');
+                    input.value = config.value;
+                    
+                    // Tratamiento especial para la configuración del tier
+                    if (config.key === 'TWITTER_API_TIER') {
+                        // Reemplazar el input por un select
+                        const select = document.createElement('select');
+                        select.className = 'form-select config-value';
+                        select.innerHTML = `
+                            <option value="free">Free - API Gratuita</option>
+                            <option value="basic">Basic - API Básica</option>
+                            <option value="pro">Pro - API Profesional</option>
+                            <option value="enterprise">Enterprise - API Empresarial</option>
+                        `;
+                        select.value = config.value;
+                        input.parentNode.replaceChild(select, input);
+                        
+                        // Añadir información sobre el tier seleccionado
+                        const tierInfo = document.createElement('div');
+                        tierInfo.className = 'mt-2 small';
+                        card.querySelector('.card-body').insertBefore(tierInfo, card.querySelector('.save-feedback'));
+                        
+                        // Actualizar información del tier al cambiar
+                        select.addEventListener('change', async () => {
+                            try {
+                                const response = await fetch('/api-limits');
+                                const data = await response.json();
+                                tierInfo.innerHTML = `
+                                    <div class="alert alert-info">
+                                        <strong>Límites del plan ${select.value.toUpperCase()}:</strong><br>
+                                        - ${data.recomendaciones.join('<br>- ')}
+                                    </div>
+                                `;
+                            } catch (error) {
+                                console.error('Error al cargar límites:', error);
+                            }
+                        });
+                        
+                        // Trigger inicial
+                        select.dispatchEvent(new Event('change'));
+                    }
+                    
+                    const saveBtn = card.querySelector('.save-btn');
+                    const feedback = card.querySelector('.save-feedback');
+                    
+                    saveBtn.addEventListener('click', async () => {
+                        try {
+                            const configValue = card.querySelector('.config-value').value;
+                            const response = await fetch(`/api/config/${config.key}`, {
+                                method: 'PUT',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify({
+                                    key: config.key,
+                                    value: configValue,
+                                    description: config.description
+                                })
+                            });
+
+                            if (response.ok) {
+                                feedback.style.display = 'block';
+                                feedback.className = 'alert alert-success save-feedback';
+                                feedback.textContent = 'Configuración guardada correctamente';
+                                
+                                // Si es el tier, actualizar los límites
+                                if (config.key === 'TWITTER_API_TIER') {
+                                    select.dispatchEvent(new Event('change'));
+                                }
+                            } else {
+                                const error = await response.json();
+                                feedback.style.display = 'block';
+                                feedback.className = 'alert alert-danger save-feedback';
+                                feedback.textContent = error.detail || 'Error al guardar la configuración';
+                            }
+                            
+                            setTimeout(() => {
+                                feedback.style.display = 'none';
+                            }, 3000);
+                        } catch (error) {
+                            console.error('Error:', error);
+                            feedback.style.display = 'block';
+                            feedback.className = 'alert alert-danger save-feedback';
+                            feedback.textContent = 'Error al guardar la configuración';
+                        }
+                    });
+
+                    container.appendChild(card);
+                });
+            } catch (error) {
+                console.error('Error cargando configuraciones:', error);
+                document.getElementById('configContainer').innerHTML = `
+                    <div class="alert alert-danger">
+                        Error al cargar las configuraciones: ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', loadConfigs);
+    </script>
+</body>
+</html> 

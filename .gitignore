@@ -2,3 +2,5 @@
 .cursorignore
 .cursorrules
 .env
+/tests
+/reports
